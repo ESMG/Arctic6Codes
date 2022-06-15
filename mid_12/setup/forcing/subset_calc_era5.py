@@ -219,7 +219,6 @@ def flood_era5_data(era5_ds, era5_var, dataset_landmask):
 
     # Use the ERA5 landmask to blank out interior data for filling via kara
     print("  -> era_cut")
-    breakpoint()
     era_cut = era[era5_var].where(dataset_landmask['mask'].values == 0)
 
     # If debug is True, a single time slice is used for testing.
