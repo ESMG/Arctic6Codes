@@ -6,7 +6,7 @@ at 6, 12 and 18km.
 # Directories
 
 The directory model follows the
-[NWA25](https://github.com/jsimkins2/nwa25.git)
+[nwa25](https://github.com/jsimkins2/nwa25.git)
 git repository.
 
 The Arctic6 repository is actually a collection of three model runs at

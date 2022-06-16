@@ -20,9 +20,21 @@
 
 import numpy as np
 import xarray as xr
-import sys, os, cftime, warnings
+import sys, os, cftime, warnings, time
 from glob import glob
 from HCtFlood import kara as flood
+
+# Get performance reports for dask
+#  - use with syntax on a block of code
+#   with performance_report(filename='dask-report.html'):
+#
+#       .... code ....
+#
+#  - requires global client variable
+#
+#from dask.distributed import Client
+#from dask.distributed import performance_report
+#client = Client(processes=False)
 
 # Subsetting functions
 
@@ -47,53 +59,26 @@ def saturation_mixing_ratio(total_press, temperature):
     return mixing_ratio(saturation_vapor_pressure(temperature), total_press)
 
 
-def make_periodic_append_longitude(ds, dvar, delta_long, has_time=True):
+def make_periodic_append_longitude(ds, dsvar, delta_long, has_time=True):
     # This appends a longitude point for the given variable
 
-    latitudes = ds['latitude']
-    longitudes = ds['longitude']
-
-    # extend the longitude coordinate by 1
-    datasets = []
-    datasets.append(longitudes)
-    # add 0.25 degrees to the final longitude value because the resolution of the ERA5 is 0.25 degrees
-    datasets.append(longitudes[-1] + delta_long)
-    longitudes = xr.concat(datasets, dim='longitude')
+    # Append longitude to the longitude coordinate
+    longitudes = list(ds['longitude'].values)
+    new_longitude = (longitudes[-1] + delta_long)
+    longitudes.append(new_longitude)
 
     print("  -> make_periodic")
     if has_time:
-        times = ds['time']
-
-        # Form the new data structure with a periodic longitude
-        ds_ext = xr.Dataset({
-            dvar : xr.DataArray(
-                data   = np.zeros((len(range(0,ds.dims['time'])), len(range(0,ds.dims['latitude'])), len(range(0,ds.dims['longitude']+1)))),
-                dims   = ['time', 'latitude', 'longitude'],
-                coords = {'time': times, 'latitude' : latitudes, 'longitude' : longitudes},
-                attrs  = {
-                    'units'     : ds[dvar].attrs['units']
-                })
-        })
-
-        ds_ext[dvar].values[:,:,0:len(ds['longitude'])] = ds[dvar].values
-        ds_ext[dvar].values[:,:,len(ds['longitude']):len(ds['longitude']) + 1] = ds[dvar][:,:,0:1].values
+        ds_pad = ds.pad(longitude=(0,1))
+        ds_pad[dsvar][:,:,-1] = ds_pad[dsvar][:,:,0]
+        ds_pad = ds_pad.assign_coords(longitude=longitudes)
     else:
         # No time dimension
-        # Form the new data structure with a periodic longitude
-        ds_ext = xr.Dataset({
-            dvar : xr.DataArray(
-                data   = np.zeros((len(range(0,ds.dims['latitude'])), len(range(0,ds.dims['longitude']+1)))),
-                dims   = ['latitude', 'longitude'],
-                coords = {'latitude' : latitudes, 'longitude' : longitudes},
-                attrs  = {
-                    'units'     : ds[dvar].attrs['units']
-                })
-        })
+        ds_pad = ds.pad(longitude=(0,1))
+        ds_pad[dsvar][:,-1] = ds_pad[dsvar][:,0]
+        ds_pad = ds_pad.assign_coords(longitude=longitudes)
 
-        ds_ext[dvar].values[:,0:len(ds['longitude'])] = ds[dvar].values
-        ds_ext[dvar].values[:,len(ds['longitude']):len(ds['longitude']) + 1] = ds[dvar][:,0:1].values
-
-    return ds_ext
+    return ds_pad
 
 def save_attrs(ds):
 
@@ -112,6 +97,8 @@ def fix_encoding_attrs(ds, oldattrs):
         if 'scale_factor' in ds[dvar].encoding: ds[dvar].encoding.pop('scale_factor')
         if 'add_offset' in ds[dvar].encoding: ds[dvar].encoding.pop('add_offset')
         ds[dvar].attrs = oldattrs[dvar]
+
+        ds['time'].encoding.update({'calendar': 'gregorian'})
 
     return ds
 
@@ -134,7 +121,7 @@ def interp_landmask(landmask_file):
     lon_b = landmask['lon_b']
     filled = lon_b.interpolate_na(dim='nyp',method='linear',fill_value="extrapolate")
     filled_lon = filled.interpolate_na(dim='nxp',method='linear',fill_value="extrapolate")
-    
+
     # interpolate latitidue corners from latitude cell centers
     lat_corners = 0.25 * (
         lat_centers[:-1, :-1]
@@ -153,7 +140,7 @@ def interp_landmask(landmask_file):
     landmask['lon_b'] = filled_lon
     landmask['lat_b'] = filled_lat
     landmask['mask'] = landmask['mask'].where(landmask['mask'] != 1)
-    
+
     return landmask
 
 def interp_era5(era5_ds, era5_var):
@@ -162,8 +149,8 @@ def interp_era5(era5_ds, era5_var):
     era = era.rename({'longitude': 'lon', 'latitude': 'lat'})
     if "lon" in era.coords:
         era = era.assign_coords(lon=(np.where(era['lon'].values > 180., era['lon'].values - 360, era['lon'].values)))
-        era = era.swap_dims({'lon' : 'nx'})    
-        era = era.swap_dims({'lat' : 'ny'}) 
+        era = era.swap_dims({'lon' : 'nx'})
+        era = era.swap_dims({'lat' : 'ny'})
     if "lon" in era.data_vars:
         era['lon'].values =  np.where(era['lon'].values > 180., era['lon'].values - 360, era['lon'].values)
 
@@ -188,7 +175,7 @@ def interp_era5(era5_ds, era5_var):
     # trim down era by 1 cell
     era = era.isel(nx=slice(1,-1), ny=slice(1,-1))
     da_era_var=era[era5_var].values
-    
+
     # add nxp and nyp dimensions for the lat/lon corners to latch onto
     era = era.expand_dims({'nyp':(len(era.lat) + 1)})
     era = era.expand_dims({'nxp':(len(era.lon) + 1)})
@@ -199,17 +186,17 @@ def interp_era5(era5_ds, era5_var):
     # drop the variable
     era = era.drop_vars(era5_var)
     era[era5_var] = xr.DataArray(data=da_era_var, dims=("time" ,"lat", "lon"))
-    
+
     # create meshgrids for center and corner points so we can co-locate with landmask meshgrids.
     lon2d, lat2d = np.meshgrid(era.lon.values, era.lat.values)
     lon2d_b, lat2d_b = np.meshgrid(era.lon_corners.values, era.lat_corners.values)
-    
+
     # assign coordinates now that we have our corner points
     era = era.assign_coords({"lon" : (("ny", "nx"), lon2d)})
     era = era.assign_coords({"lat" : (("ny", "nx"), lat2d)})
     era = era.assign_coords({"lon_b" : (("nyp", "nxp"), lon2d_b)})
     era = era.assign_coords({"lat_b" : (("nyp", "nxp"), lat2d_b)})
-    
+
     return era
 
 def flood_era5_data(era5_ds, era5_var, dataset_landmask):
@@ -248,7 +235,7 @@ def flood_era5_data(era5_ds, era5_var, dataset_landmask):
     #data.to_netcdf('regrid.nc')
 
     #breakpoint()
-    
+
     # regrid conservatively: conservative does the best, especially along fine points
     #print("  -> Regridder")
     #regrid_domain = xe.Regridder(landmask, era, 'conservative', 
@@ -272,9 +259,9 @@ def flood_era5_data(era5_ds, era5_var, dataset_landmask):
     #era = era5_ds
     #era = era.isel(longitude=slice(1,len(era.longitude)-1), latitude=slice(1,len(era.latitude)-1))
     #era = era.transpose("time", "latitude", "longitude")
-    
-    era[era5_var].values = flooded.values    
-    
+
+    era[era5_var].values = flooded.values
+
     if era5_var=='ssrd' or era5_var=='strd':
         # convert radiation from J/m2 to W/m2: https://confluence.ecmwf.int/pages/viewpage.action?pageId=155337784
         era[era5_var].values = era[era5_var].values/3600
@@ -319,12 +306,17 @@ def checkPadding(thisYear, pastYear, era_var):
     if doPadding:
         print("  -> pad")
         firstRec = ty_ds[era_var][0,:,:]
-        newRecs = xr.concat([py_ds[era_var],firstRec],'time')
-        newRecs = newRecs.to_dataset()
+        py_ds_pad = py_ds.pad(time=(0,1))
+        py_ds_pad[era_var][-1,:,:] = firstRec
+        tcoord = py_ds_pad['time'].values
+        tcoord[-1] = t1.values
+        py_ds_pad = py_ds_pad.assign_coords(time=tcoord)
+        newRecs = py_ds_pad
 
         # Remove all _FillValue
         all_vars = list(newRecs.data_vars.keys()) + list(newRecs.coords.keys())
         encodings = {v: {'_FillValue': None, 'dtype': datatype} for v in all_vars}
+        encodings['time'].update({'calendar': 'gregorian'})
         #breakpoint()
 
         ty_ds.close()
@@ -365,12 +357,12 @@ lonsub = slice(0,360)
 # NOT USED
 
 # directories
-era5dir = "/import/AKWATERS/kshedstrom/ERA5"
+#era5dir = "/import/AKWATERS/kshedstrom/ERA5"
+era5dir = "/import/AKWATERS/jrcermakiii/data/ERA5"
 subdir = "/import/AKWATERS/jrcermakiii/data/ERA5_periodic_subset"
 modeldir = "/import/AKWATERS/jrcermakiii/configs/Arctic12/INPUT2"
 
 # files
-landmask_file = os.path.join(modeldir, "land_mask.nc")
 dataset_landmask_source_file = os.path.join(era5dir, "ERA5_sea_surface_temperature_1993.nc")
 dataset_landmask_file = os.path.join(subdir, 'ERA5_landmask.nc')
 
@@ -408,6 +400,7 @@ else:
 for f in era5_dict.keys():
     print(f)
     for y in years:
+
         print("-> %d" % (y))
 
         # These two fields require special processing
@@ -419,10 +412,12 @@ for f in era5_dict.keys():
             # Subset and flood if necessary
             if not(os.path.isfile(thisYear)):
                 #breakpoint()
+                try:
+                    crr = xr.open_dataset(os.path.join(era5dir, 'ERA5_convective_rain_rate_' + str(y) + '.nc')).sel(latitude=latsub, longitude=lonsub)
+                    lsrr = xr.open_dataset(os.path.join(era5dir, 'ERA5_large_scale_rain_rate_' + str(y) + '.nc')).sel(latitude=latsub, longitude=lonsub)
+                except:
+                    continue
                 print("  -> subset")
-                #crr = xr.open_dataset(str(era5dir + 'ERA5_convective_rain_rate_' + str(y) + '.nc'))
-                crr = xr.open_dataset(os.path.join(era5dir, 'ERA5_convective_rain_rate_' + str(y) + '.nc')).sel(latitude=latsub, longitude=lonsub)
-                lsrr = xr.open_dataset(os.path.join(era5dir, 'ERA5_large_scale_rain_rate_' + str(y) + '.nc')).sel(latitude=latsub, longitude=lonsub)
                 trr = xr.Dataset()
                 trr['trr'] = crr['crr'] + lsrr['lsrr']
                 trr['trr'].attrs = {'units': 'kg m-2 s-1', 'long_name': 'Total rain rate (convective and large scale)'}
@@ -459,10 +454,13 @@ for f in era5_dict.keys():
             # Subset and flood if necessary
             if not(os.path.isfile(thisYear)):
                 #breakpoint()
-                print("  -> subset")
-                pair = xr.open_dataset(os.path.join(era5dir, 'ERA5_surface_pressure_' + str(y) + '.nc'))['sp'].sel(latitude=latsub, longitude=lonsub) # Pa
-                tdew = xr.open_dataset(os.path.join(era5dir, 'ERA5_2m_dewpoint_temperature_' + str(y) + '.nc'))['d2m'].sel(latitude=latsub, longitude=lonsub) # K
+                try:
+                    pair = xr.open_dataset(os.path.join(era5dir, 'ERA5_surface_pressure_' + str(y) + '.nc'))['sp'].sel(latitude=latsub, longitude=lonsub) # Pa
+                    tdew = xr.open_dataset(os.path.join(era5dir, 'ERA5_2m_dewpoint_temperature_' + str(y) + '.nc'))['d2m'].sel(latitude=latsub, longitude=lonsub) # K
+                except:
+                    continue
 
+                print("  -> subset")
                 smr = saturation_mixing_ratio(pair, tdew)
                 sphum = specific_humidity_from_mixing_ratio(smr)
 
@@ -482,7 +480,7 @@ for f in era5_dict.keys():
 
                 # Also fix the time encoding
                 encodings['time'].update({'dtype': datatype, 'calendar': 'gregorian', 'units': 'hours since 1900-01-01 00:00:00'})
-            
+
                 sphum.to_netcdf(
                     thisYear,
                     format='NETCDF4_CLASSIC',
@@ -503,13 +501,16 @@ for f in era5_dict.keys():
             # Determine filenames for storage
             thisYear = os.path.join(subdir, f + '_' + str(y) + ".nc")
             pastYear = os.path.join(subdir, f + '_' + str(y-1) + ".nc")
-            
+
             # Subset and flood if necessary
             if not(os.path.isfile(thisYear)):
                 #breakpoint()
-                print("  -> subset")
                 ds_file = os.path.join(era5dir, f + '_' + str(y) + ".nc")
-                ds = xr.open_dataset(ds_file).sel(latitude=latsub, longitude=lonsub)
+                try:
+                    ds = xr.open_dataset(ds_file).sel(latitude=latsub, longitude=lonsub)
+                except:
+                    continue
+                print("  -> subset")
                 ds_attrs = save_attrs(ds)
                 ds = make_periodic_append_longitude(ds, era5_dict[f], 0.25)
                 ds = fix_encoding_attrs(ds, ds_attrs)
@@ -528,3 +529,5 @@ for f in era5_dict.keys():
             if usePadding and y > firstYear:
                 checkPadding(thisYear, pastYear, era5_dict[f])
 
+
+#time.sleep(600)
