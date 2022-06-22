@@ -59,7 +59,7 @@ def saturation_mixing_ratio(total_press, temperature):
     return mixing_ratio(saturation_vapor_pressure(temperature), total_press)
 
 
-def make_periodic_append_longitude(ds, dsvar, delta_long, has_time=True):
+def make_periodic_append_longitude(ds, dsvar, delta_long, has_time=True, flip_latitude=False):
     # This appends a longitude point for the given variable
 
     # Append longitude to the longitude coordinate
@@ -77,6 +77,10 @@ def make_periodic_append_longitude(ds, dsvar, delta_long, has_time=True):
         ds_pad = ds.pad(longitude=(0,1))
         ds_pad[dsvar][:,-1] = ds_pad[dsvar][:,0]
         ds_pad = ds_pad.assign_coords(longitude=longitudes)
+
+    # Reverse the latitudes
+    if flip_latitude:
+        ds_pad = ds_pad.reindex(latitude=list(reversed(ds_pad.latitude)))
 
     return ds_pad
 
@@ -287,7 +291,7 @@ def flood_era5_data(era5_ds, era5_var, dataset_landmask):
 
 # Padding functions
 
-def checkPadding(thisYear, pastYear, era_var):
+def checkPadding(thisYear, pastYear, era_var, tmp_file=None):
 
     ty_ds = xr.open_dataset(thisYear)
     py_ds = xr.open_dataset(pastYear)
@@ -305,6 +309,7 @@ def checkPadding(thisYear, pastYear, era_var):
 
     if doPadding:
         print("  -> pad")
+        
         firstRec = ty_ds[era_var][0,:,:]
         py_ds_pad = py_ds.pad(time=(0,1))
         py_ds_pad[era_var][-1,:,:] = firstRec
@@ -317,11 +322,18 @@ def checkPadding(thisYear, pastYear, era_var):
         all_vars = list(newRecs.data_vars.keys()) + list(newRecs.coords.keys())
         encodings = {v: {'_FillValue': None, 'dtype': datatype} for v in all_vars}
         encodings['time'].update({'calendar': 'gregorian'})
-        #breakpoint()
 
         ty_ds.close()
         py_ds.close()
-        newRecs.to_netcdf(pastYear, format="NETCDF4_CLASSIC", encoding=encodings)
+
+        # In certain circumstances, overwriting a file causes problems.
+        # Save to a temp file and rename.
+        if tmp_file:
+            newRecs.to_netcdf(tmp_file, format="NETCDF4_CLASSIC", encoding=encodings, unlimited_dims='time')
+            os.unlink(pastYear)
+            os.rename(tmp_file, pastYear)
+        else:
+            newRecs.to_netcdf(pastYear, format="NETCDF4_CLASSIC", encoding=encodings, unlimited_dims='time')
     else:
         ty_ds.close()
         py_ds.close()
@@ -333,16 +345,17 @@ era5_dict = {
     'ERA5_sea_ice_cover':                       'siconc',
     'ERA5_10m_u_component_of_wind':             'u10',
     'ERA5_10m_v_component_of_wind':             'v10',
-    'ERA5_2m_specific_humidity':                'huss',
     'ERA5_surface_solar_radiation_downwards':   'ssrd',
     'ERA5_surface_thermal_radiation_downwards': 'strd',
     'ERA5_mean_sea_level_pressure':             'msl',
     'ERA5_total_rain_rate':                     'trr',
-    'ERA5_snowfall':                            'sf'
+    'ERA5_snowfall':                            'sf',
+    'ERA5_2m_specific_humidity':                'huss',
 }
 
 # For testing, only process one field
 #era5_dict = {
+#    'ERA5_2m_temperature':                      't2m',
 #    'ERA5_total_rain_rate':                     'trr'
 #}
 
@@ -389,7 +402,8 @@ if not(os.path.isfile(dataset_landmask_file)):
     dataset_landmask = ds_data['mask'].copy()
     dataset_landmask = dataset_landmask.to_dataset()
     dataset_landmask['mask'].attrs['units'] = 'dataset landmask'
-    dataset_landmask = make_periodic_append_longitude(dataset_landmask, 'mask', 0.25, has_time=False)
+    dataset_landmask = make_periodic_append_longitude(dataset_landmask, 'mask', 0.25, has_time=False,
+        flip_latitude=True)
     all_vars = list(dataset_landmask.data_vars.keys()) + list(dataset_landmask.coords.keys())
     encodings = {v: {'_FillValue': None} for v in all_vars}
     dataset_landmask.to_netcdf(dataset_landmask_file, mode='w', format='NETCDF4_CLASSIC', encoding=encodings)
@@ -421,7 +435,7 @@ for f in era5_dict.keys():
                 trr = xr.Dataset()
                 trr['trr'] = crr['crr'] + lsrr['lsrr']
                 trr['trr'].attrs = {'units': 'kg m-2 s-1', 'long_name': 'Total rain rate (convective and large scale)'}
-                trr = make_periodic_append_longitude(trr, era5_dict[f], 0.25)
+                trr = make_periodic_append_longitude(trr, era5_dict[f], 0.25, flip_latitude=True)
 
                 # Flood
                 if useFlooding:
@@ -434,7 +448,7 @@ for f in era5_dict.keys():
                 # Also fix the time encoding
                 encodings['time'].update({'dtype': datatype, 'calendar': 'gregorian', 'units': 'hours since 1900-01-01 00:00:00'})
 
-                trr.to_netcdf(thisYear, mode='w', format='NETCDF4_CLASSIC', encoding=encodings)
+                trr.to_netcdf(thisYear, mode='w', format='NETCDF4_CLASSIC', encoding=encodings, unlimited_dims='time')
                 crr.close()
                 lsrr.close()
                 trr.close()
@@ -468,7 +482,7 @@ for f in era5_dict.keys():
                 sphum = sphum.to_dataset()
                 sphum['huss'].attrs['units'] = 'kg kg-1'
                 sphum['huss'].attrs['long_name'] = '2 meter specific humidity'
-                sphum = make_periodic_append_longitude(sphum, era5_dict[f], 0.25)
+                sphum = make_periodic_append_longitude(sphum, era5_dict[f], 0.25, flip_latitude=True)
 
                 # Flood
                 if useFlooding:
@@ -476,7 +490,7 @@ for f in era5_dict.keys():
 
                 # Remove all _FillValue
                 all_vars = list(sphum.data_vars.keys()) + list(sphum.coords.keys())
-                encodings = {v: {'_FillValue': None} for v in all_vars}
+                encodings = {v: {'_FillValue': None, 'dtype': datatype} for v in all_vars}
 
                 # Also fix the time encoding
                 encodings['time'].update({'dtype': datatype, 'calendar': 'gregorian', 'units': 'hours since 1900-01-01 00:00:00'})
@@ -485,7 +499,8 @@ for f in era5_dict.keys():
                     thisYear,
                     format='NETCDF4_CLASSIC',
                     engine='netcdf4',
-                    encoding=encodings
+                    encoding=encodings,
+                    unlimited_dims='time'
                 )
                 sphum.close()
 
@@ -494,7 +509,8 @@ for f in era5_dict.keys():
             # appended to the prior year.  This routine can be smart by checking if the prior year has already
             # been padded.
             if usePadding and y > firstYear:
-                checkPadding(thisYear, pastYear, era5_dict[f])
+                tmp_file = os.path.join(subdir, f + '_' + str(y-1) + "_tmp.nc")
+                checkPadding(thisYear, pastYear, era5_dict[f], tmp_file=tmp_file)
 
         # All other fields conform to a single processing method
         if 'total_rain_rate' not in f and 'specific_humidity' not in f:
@@ -512,14 +528,14 @@ for f in era5_dict.keys():
                     continue
                 print("  -> subset")
                 ds_attrs = save_attrs(ds)
-                ds = make_periodic_append_longitude(ds, era5_dict[f], 0.25)
+                ds = make_periodic_append_longitude(ds, era5_dict[f], 0.25, flip_latitude=True)
                 ds = fix_encoding_attrs(ds, ds_attrs)
 
                 # Flood
                 if useFlooding:
                     ds = flood_era5_data(era5_ds=ds, era5_var=era5_dict[f], dataset_landmask=dataset_landmask)
 
-                ds.to_netcdf(thisYear, format="NETCDF4_CLASSIC")
+                ds.to_netcdf(thisYear, format="NETCDF4_CLASSIC", unlimited_dims='time')
                 ds.close()
 
             # Pad
