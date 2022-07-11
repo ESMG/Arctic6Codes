@@ -20,9 +20,11 @@
 
 import numpy as np
 import xarray as xr
-import sys, os, cftime, warnings, time
+import sys, os, cftime, warnings, time, argparse
 from glob import glob
 from HCtFlood import kara as flood
+
+parser = None
 
 # Get performance reports for dask
 #  - use with syntax on a block of code
@@ -35,6 +37,23 @@ from HCtFlood import kara as flood
 #from dask.distributed import Client
 #from dask.distributed import performance_report
 #client = Client(processes=False)
+
+def getArguments():
+    '''
+    Create forcing files from ERA5 dataset
+    --startYear=YYYY
+    --endYear=YYYY
+    '''
+
+    global parser
+
+    parser = argparse.ArgumentParser(description='Create forcing files from ERA5 dataset')
+    parser.add_argument("--startYear", help='The start year of ERA5 to process', type=int, default=None)
+    parser.add_argument("--endYear", help='The end year of ERA5 to process', type=int, default=None)
+
+    args = parser.parse_args()
+    return args
+
 
 # Subsetting functions
 
@@ -92,8 +111,7 @@ def save_attrs(ds):
 
     return attr_array
 
-def fix_encoding_attrs(ds, oldattrs):
-    global datatype
+def fix_encoding_attrs(ds, oldattrs, datatype):
 
     for dvar in list(ds.variables):
         ds[dvar].encoding.update({'dtype': datatype, '_FillValue': None})
@@ -203,7 +221,7 @@ def interp_era5(era5_ds, era5_var):
 
     return era
 
-def flood_era5_data(era5_ds, era5_var, dataset_landmask):
+def flood_era5_data(era5_ds, era5_var, dataset_landmask, datatype):
 
     era = era5_ds
     era = era.rename({'longitude':'lon', 'latitude':'lat'})
@@ -291,7 +309,7 @@ def flood_era5_data(era5_ds, era5_var, dataset_landmask):
 
 # Padding functions
 
-def checkPadding(thisYear, pastYear, era_var, tmp_file=None):
+def checkPadding(thisYear, pastYear, era_var, datatype, tmp_file=None):
 
     ty_ds = xr.open_dataset(thisYear)
     py_ds = xr.open_dataset(pastYear)
@@ -338,212 +356,223 @@ def checkPadding(thisYear, pastYear, era_var, tmp_file=None):
         ty_ds.close()
         py_ds.close()
 
-# The processing order is set by this dictionary
-era5_dict = {
-    'ERA5_2m_temperature':                      't2m',
-    'ERA5_sea_surface_temperature':             'sst',
-    'ERA5_sea_ice_cover':                       'siconc',
-    'ERA5_10m_u_component_of_wind':             'u10',
-    'ERA5_10m_v_component_of_wind':             'v10',
-    'ERA5_surface_solar_radiation_downwards':   'ssrd',
-    'ERA5_surface_thermal_radiation_downwards': 'strd',
-    'ERA5_mean_sea_level_pressure':             'msl',
-    'ERA5_total_rain_rate':                     'trr',
-    'ERA5_snowfall':                            'sf',
-    'ERA5_2m_specific_humidity':                'huss',
-}
+def main():
 
-# For testing, only process one field
-#era5_dict = {
-#    'ERA5_2m_temperature':                      't2m',
-#    'ERA5_total_rain_rate':                     'trr'
-#}
+    args = getArguments()
 
-# subset
-# Stage 1: Testing, just do two years (1993,1995)
-# Stage 2: Run all years (1993,2019)
-years = range(1993,1995)
-latsub = slice(90,39)
-lonsub = slice(0,360)
+    startYear = args.startYear
+    endYear   = args.endYear + 1
 
-# storage
-# NOT USED
+    # Main program
+    # The processing order is set by this dictionary
+    era5_dict = {
+        'ERA5_2m_temperature':                      't2m',
+        'ERA5_sea_surface_temperature':             'sst',
+        'ERA5_sea_ice_cover':                       'siconc',
+        'ERA5_10m_u_component_of_wind':             'u10',
+        'ERA5_10m_v_component_of_wind':             'v10',
+        'ERA5_surface_solar_radiation_downwards':   'ssrd',
+        'ERA5_surface_thermal_radiation_downwards': 'strd',
+        'ERA5_mean_sea_level_pressure':             'msl',
+        'ERA5_total_rain_rate':                     'trr',
+        'ERA5_snowfall':                            'sf',
+        'ERA5_2m_specific_humidity':                'huss',
+    }
 
-# directories
-#era5dir = "/import/AKWATERS/kshedstrom/ERA5"
-era5dir = "/import/AKWATERS/jrcermakiii/data/ERA5"
-subdir = "/import/AKWATERS/jrcermakiii/data/ERA5_periodic_subset"
-modeldir = "/import/AKWATERS/jrcermakiii/configs/Arctic12/INPUT2"
+    # For testing, only process one field
+    #era5_dict = {
+    #    'ERA5_2m_temperature':                      't2m',
+    #    'ERA5_total_rain_rate':                     'trr'
+    #}
 
-# files
-dataset_landmask_source_file = os.path.join(era5dir, "ERA5_sea_surface_temperature_1993.nc")
-dataset_landmask_file = os.path.join(subdir, 'ERA5_landmask.nc')
+    # subset
+    # Stage 1: Testing, just do two years (1993, 1995)
+    # Stage 2: Run all years (1993, 2019)
+    years = range(startYear, endYear)
+    latsub = slice(90, 39)
+    lonsub = slice(0, 360)
 
-# constants and flags
-datatype = 'float32'
-usePadding = True
-useFlooding = True
+    # storage
+    # NOT USED
 
-# Padding is required for MOM6 to provide continuity between restarts of
-# runs between blocks of time (in this case by year).
-firstYear=1993
+    # directories
+    #era5dir = "/import/AKWATERS/kshedstrom/ERA5"
+    era5dir = "/import/AKWATERS/jrcermakiii/data/ERA5"
+    subdir = "/import/AKWATERS/jrcermakiii/data/ERA5_periodic_subset"
+    modeldir = "/import/AKWATERS/jrcermakiii/configs/Arctic12/INPUT2"
 
-if not(os.path.isfile(dataset_landmask_file)):
-    # Obtain landmask from ERA5 dataset
-    # and subset
-    print("Extracting dataset land mask.")
-    ds_data = xr.open_dataset(dataset_landmask_source_file).sel(latitude=latsub, longitude=lonsub)
+    # files
+    dataset_landmask_source_file = os.path.join(era5dir, "ERA5_sea_surface_temperature_1993.nc")
+    dataset_landmask_file = os.path.join(subdir, 'ERA5_landmask.nc')
 
-    ds_data['mask'] = xr.DataArray(
-        data = np.where(np.isnan(ds_data['sst'][0,:,:].values),1,0),
-        dims = ['latitude','longitude']
-    )
+    # constants and flags
+    datatype = 'float32'
+    usePadding = True
+    useFlooding = True
 
-    dataset_landmask = ds_data['mask'].copy()
-    dataset_landmask = dataset_landmask.to_dataset()
-    dataset_landmask['mask'].attrs['units'] = 'dataset landmask'
-    dataset_landmask = make_periodic_append_longitude(dataset_landmask, 'mask', 0.25, has_time=False,
-        flip_latitude=True)
-    all_vars = list(dataset_landmask.data_vars.keys()) + list(dataset_landmask.coords.keys())
-    encodings = {v: {'_FillValue': None} for v in all_vars}
-    dataset_landmask.to_netcdf(dataset_landmask_file, mode='w', format='NETCDF4_CLASSIC', encoding=encodings)
-else:
-    dataset_landmask = xr.open_dataset(dataset_landmask_file)
+    # Padding is required for MOM6 to provide continuity between restarts of
+    # runs between blocks of time (in this case by year).
+    firstYear = startYear
 
-# Main program
-for f in era5_dict.keys():
-    print(f)
-    for y in years:
+    if not(os.path.isfile(dataset_landmask_file)):
+        # Obtain landmask from ERA5 dataset
+        # and subset
+        print("Extracting dataset land mask.")
+        ds_data = xr.open_dataset(dataset_landmask_source_file).sel(latitude=latsub, longitude=lonsub)
 
-        print("-> %d" % (y))
+        ds_data['mask'] = xr.DataArray(
+            data = np.where(np.isnan(ds_data['sst'][0,:,:].values),1,0),
+            dims = ['latitude','longitude']
+        )
 
-        # These two fields require special processing
-        if f == 'ERA5_total_rain_rate':
-            # Determine filenames for storage
-            thisYear = os.path.join(subdir, f + '_' + str(y) + ".nc")
-            pastYear = os.path.join(subdir, f + '_' + str(y-1) + ".nc")
+        dataset_landmask = ds_data['mask'].copy()
+        dataset_landmask = dataset_landmask.to_dataset()
+        dataset_landmask['mask'].attrs['units'] = 'dataset landmask'
+        dataset_landmask = make_periodic_append_longitude(dataset_landmask, 'mask', 0.25, has_time=False,
+            flip_latitude=True)
+        all_vars = list(dataset_landmask.data_vars.keys()) + list(dataset_landmask.coords.keys())
+        encodings = {v: {'_FillValue': None} for v in all_vars}
+        dataset_landmask.to_netcdf(dataset_landmask_file, mode='w', format='NETCDF4_CLASSIC', encoding=encodings)
+    else:
+        dataset_landmask = xr.open_dataset(dataset_landmask_file)
 
-            # Subset and flood if necessary
-            if not(os.path.isfile(thisYear)):
-                #breakpoint()
-                try:
-                    crr = xr.open_dataset(os.path.join(era5dir, 'ERA5_convective_rain_rate_' + str(y) + '.nc')).sel(latitude=latsub, longitude=lonsub)
-                    lsrr = xr.open_dataset(os.path.join(era5dir, 'ERA5_large_scale_rain_rate_' + str(y) + '.nc')).sel(latitude=latsub, longitude=lonsub)
-                except:
-                    continue
-                print("  -> subset")
-                trr = xr.Dataset()
-                trr['trr'] = crr['crr'] + lsrr['lsrr']
-                trr['trr'].attrs = {'units': 'kg m-2 s-1', 'long_name': 'Total rain rate (convective and large scale)'}
-                trr = make_periodic_append_longitude(trr, era5_dict[f], 0.25, flip_latitude=True)
+    for f in era5_dict.keys():
+        print(f)
+        for y in years:
 
-                # Flood
-                if useFlooding:
-                    trr = flood_era5_data(era5_ds=trr, era5_var='trr', dataset_landmask=dataset_landmask)
+            print("-> %d" % (y))
 
-                # Remove all _FillValue
-                all_vars = list(trr.data_vars.keys()) + list(trr.coords.keys())
-                encodings = {v: {'_FillValue': None, 'dtype': datatype} for v in all_vars}
+            # These two fields require special processing
+            if f == 'ERA5_total_rain_rate':
+                # Determine filenames for storage
+                thisYear = os.path.join(subdir, f + '_' + str(y) + ".nc")
+                pastYear = os.path.join(subdir, f + '_' + str(y-1) + ".nc")
 
-                # Also fix the time encoding
-                encodings['time'].update({'dtype': datatype, 'calendar': 'gregorian', 'units': 'hours since 1900-01-01 00:00:00'})
+                # Subset and flood if necessary
+                if not(os.path.isfile(thisYear)):
+                    #breakpoint()
+                    try:
+                        crr = xr.open_dataset(os.path.join(era5dir, 'ERA5_convective_rain_rate_' + str(y) + '.nc')).sel(latitude=latsub, longitude=lonsub)
+                        lsrr = xr.open_dataset(os.path.join(era5dir, 'ERA5_large_scale_rain_rate_' + str(y) + '.nc')).sel(latitude=latsub, longitude=lonsub)
+                    except:
+                        continue
+                    print("  -> subset")
+                    trr = xr.Dataset()
+                    trr['trr'] = crr['crr'] + lsrr['lsrr']
+                    trr['trr'].attrs = {'units': 'kg m-2 s-1', 'long_name': 'Total rain rate (convective and large scale)'}
+                    trr = make_periodic_append_longitude(trr, era5_dict[f], 0.25, flip_latitude=True)
 
-                trr.to_netcdf(thisYear, mode='w', format='NETCDF4_CLASSIC', encoding=encodings, unlimited_dims='time')
-                crr.close()
-                lsrr.close()
-                trr.close()
+                    # Flood
+                    if useFlooding:
+                        trr = flood_era5_data(era5_ds=trr, era5_var='trr', dataset_landmask=dataset_landmask,
+                            datatype=datatype)
 
-            # Pad
-            # For ERA5, years after the first year, the first record of the recently processed year has to be
-            # appended to the prior year.  This routine can be smart by checking if the prior year has already
-            # been padded.
-            if usePadding and y > firstYear:
-                checkPadding(thisYear, pastYear, era5_dict[f])
+                    # Remove all _FillValue
+                    all_vars = list(trr.data_vars.keys()) + list(trr.coords.keys())
+                    encodings = {v: {'_FillValue': None, 'dtype': datatype} for v in all_vars}
 
-        if f == 'ERA5_2m_specific_humidity':
-            # Determine filenames for storage
-            thisYear = os.path.join(subdir, f + '_' + str(y) + ".nc")
-            pastYear = os.path.join(subdir, f + '_' + str(y-1) + ".nc")
+                    # Also fix the time encoding
+                    encodings['time'].update({'dtype': datatype, 'calendar': 'gregorian', 'units': 'hours since 1900-01-01 00:00:00'})
 
-            # Subset and flood if necessary
-            if not(os.path.isfile(thisYear)):
-                #breakpoint()
-                try:
-                    pair = xr.open_dataset(os.path.join(era5dir, 'ERA5_surface_pressure_' + str(y) + '.nc'))['sp'].sel(latitude=latsub, longitude=lonsub) # Pa
-                    tdew = xr.open_dataset(os.path.join(era5dir, 'ERA5_2m_dewpoint_temperature_' + str(y) + '.nc'))['d2m'].sel(latitude=latsub, longitude=lonsub) # K
-                except:
-                    continue
+                    trr.to_netcdf(thisYear, mode='w', format='NETCDF4_CLASSIC', encoding=encodings, unlimited_dims='time')
+                    crr.close()
+                    lsrr.close()
+                    trr.close()
 
-                print("  -> subset")
-                smr = saturation_mixing_ratio(pair, tdew)
-                sphum = specific_humidity_from_mixing_ratio(smr)
+                # Pad
+                # For ERA5, years after the first year, the first record of the recently processed year has to be
+                # appended to the prior year.  This routine can be smart by checking if the prior year has already
+                # been padded.
+                if usePadding and y > firstYear:
+                    checkPadding(thisYear, pastYear, era5_dict[f], datatype)
 
-                sphum.name = 'huss'
-                sphum = sphum.to_dataset()
-                sphum['huss'].attrs['units'] = 'kg kg-1'
-                sphum['huss'].attrs['long_name'] = '2 meter specific humidity'
-                sphum = make_periodic_append_longitude(sphum, era5_dict[f], 0.25, flip_latitude=True)
+            if f == 'ERA5_2m_specific_humidity':
+                # Determine filenames for storage
+                thisYear = os.path.join(subdir, f + '_' + str(y) + ".nc")
+                pastYear = os.path.join(subdir, f + '_' + str(y-1) + ".nc")
 
-                # Flood
-                if useFlooding:
-                    sphum = flood_era5_data(era5_ds=sphum, era5_var='huss', dataset_landmask=dataset_landmask)
+                # Subset and flood if necessary
+                if not(os.path.isfile(thisYear)):
+                    #breakpoint()
+                    try:
+                        pair = xr.open_dataset(os.path.join(era5dir, 'ERA5_surface_pressure_' + str(y) + '.nc'))['sp'].sel(latitude=latsub, longitude=lonsub) # Pa
+                        tdew = xr.open_dataset(os.path.join(era5dir, 'ERA5_2m_dewpoint_temperature_' + str(y) + '.nc'))['d2m'].sel(latitude=latsub, longitude=lonsub) # K
+                    except:
+                        continue
 
-                # Remove all _FillValue
-                all_vars = list(sphum.data_vars.keys()) + list(sphum.coords.keys())
-                encodings = {v: {'_FillValue': None, 'dtype': datatype} for v in all_vars}
+                    print("  -> subset")
+                    smr = saturation_mixing_ratio(pair, tdew)
+                    sphum = specific_humidity_from_mixing_ratio(smr)
 
-                # Also fix the time encoding
-                encodings['time'].update({'dtype': datatype, 'calendar': 'gregorian', 'units': 'hours since 1900-01-01 00:00:00'})
+                    sphum.name = 'huss'
+                    sphum = sphum.to_dataset()
+                    sphum['huss'].attrs['units'] = 'kg kg-1'
+                    sphum['huss'].attrs['long_name'] = '2 meter specific humidity'
+                    sphum = make_periodic_append_longitude(sphum, era5_dict[f], 0.25, flip_latitude=True)
 
-                sphum.to_netcdf(
-                    thisYear,
-                    format='NETCDF4_CLASSIC',
-                    engine='netcdf4',
-                    encoding=encodings,
-                    unlimited_dims='time'
-                )
-                sphum.close()
+                    # Flood
+                    if useFlooding:
+                        sphum = flood_era5_data(era5_ds=sphum, era5_var='huss', dataset_landmask=dataset_landmask,
+                            datatype=datatype)
 
-            # Pad
-            # For ERA5, years after the first year, the first record of the recently processed year has to be
-            # appended to the prior year.  This routine can be smart by checking if the prior year has already
-            # been padded.
-            if usePadding and y > firstYear:
-                tmp_file = os.path.join(subdir, f + '_' + str(y-1) + "_tmp.nc")
-                checkPadding(thisYear, pastYear, era5_dict[f], tmp_file=tmp_file)
+                    # Remove all _FillValue
+                    all_vars = list(sphum.data_vars.keys()) + list(sphum.coords.keys())
+                    encodings = {v: {'_FillValue': None, 'dtype': datatype} for v in all_vars}
 
-        # All other fields conform to a single processing method
-        if 'total_rain_rate' not in f and 'specific_humidity' not in f:
-            # Determine filenames for storage
-            thisYear = os.path.join(subdir, f + '_' + str(y) + ".nc")
-            pastYear = os.path.join(subdir, f + '_' + str(y-1) + ".nc")
+                    # Also fix the time encoding
+                    encodings['time'].update({'dtype': datatype, 'calendar': 'gregorian', 'units': 'hours since 1900-01-01 00:00:00'})
 
-            # Subset and flood if necessary
-            if not(os.path.isfile(thisYear)):
-                #breakpoint()
-                ds_file = os.path.join(era5dir, f + '_' + str(y) + ".nc")
-                try:
-                    ds = xr.open_dataset(ds_file).sel(latitude=latsub, longitude=lonsub)
-                except:
-                    continue
-                print("  -> subset")
-                ds_attrs = save_attrs(ds)
-                ds = make_periodic_append_longitude(ds, era5_dict[f], 0.25, flip_latitude=True)
-                ds = fix_encoding_attrs(ds, ds_attrs)
+                    sphum.to_netcdf(
+                        thisYear,
+                        format='NETCDF4_CLASSIC',
+                        engine='netcdf4',
+                        encoding=encodings,
+                        unlimited_dims='time'
+                    )
+                    sphum.close()
 
-                # Flood
-                if useFlooding:
-                    ds = flood_era5_data(era5_ds=ds, era5_var=era5_dict[f], dataset_landmask=dataset_landmask)
+                # Pad
+                # For ERA5, years after the first year, the first record of the recently processed year has to be
+                # appended to the prior year.  This routine can be smart by checking if the prior year has already
+                # been padded.
+                if usePadding and y > firstYear:
+                    tmp_file = os.path.join(subdir, f + '_' + str(y-1) + "_tmp.nc")
+                    checkPadding(thisYear, pastYear, era5_dict[f], datatype, tmp_file=tmp_file)
 
-                ds.to_netcdf(thisYear, format="NETCDF4_CLASSIC", unlimited_dims='time')
-                ds.close()
+            # All other fields conform to a single processing method
+            if 'total_rain_rate' not in f and 'specific_humidity' not in f:
+                # Determine filenames for storage
+                thisYear = os.path.join(subdir, f + '_' + str(y) + ".nc")
+                pastYear = os.path.join(subdir, f + '_' + str(y-1) + ".nc")
 
-            # Pad
-            # For ERA5, years after the first year, the first record of the recently processed year has to be
-            # appended to the prior year.  This routine can be smart by checking if the prior year has already
-            # been padded.
-            if usePadding and y > firstYear:
-                checkPadding(thisYear, pastYear, era5_dict[f])
+                # Subset and flood if necessary
+                if not(os.path.isfile(thisYear)):
+                    #breakpoint()
+                    ds_file = os.path.join(era5dir, f + '_' + str(y) + ".nc")
+                    try:
+                        ds = xr.open_dataset(ds_file).sel(latitude=latsub, longitude=lonsub)
+                    except:
+                        continue
+                    print("  -> subset")
+                    ds_attrs = save_attrs(ds)
+                    ds = make_periodic_append_longitude(ds, era5_dict[f], 0.25, flip_latitude=True)
+                    ds = fix_encoding_attrs(ds, ds_attrs, datatype)
 
+                    # Flood
+                    if useFlooding:
+                        ds = flood_era5_data(era5_ds=ds, era5_var=era5_dict[f], dataset_landmask=dataset_landmask,
+                            datatype=datatype)
+
+                    ds.to_netcdf(thisYear, format="NETCDF4_CLASSIC", unlimited_dims='time')
+                    ds.close()
+
+                # Pad
+                # For ERA5, years after the first year, the first record of the recently processed year has to be
+                # appended to the prior year.  This routine can be smart by checking if the prior year has already
+                # been padded.
+                if usePadding and y > firstYear:
+                    checkPadding(thisYear, pastYear, era5_dict[f], datatype)
 
 #time.sleep(600)
+if __name__ == '__main__':
+    main()
