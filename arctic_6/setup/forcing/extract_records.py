@@ -4,7 +4,7 @@ import xarray as xr
 era5dir = "/import/AKWATERS/kshedstrom/ERA5"
 trec = slice(0,19)
 
-for yr in range(1993,1995):
+for yr in range(1995,1996):
 
     df = "ERA5_sea_surface_temperature_%d.nc" % (yr)
     dataset_source_file = os.path.join(era5dir, df)
