@@ -121,12 +121,20 @@ def main():
     args = getArguments()
 
     #glorys_dirs = ['/home/cermak/workdir/datasets/global/glorys', '/home/cermak/workdir/datasets/global/glorys2']
-    glorys_dirs = ['/import/AKWATERS/kshedstrom/glorys', '/import/AKWATERS/kshedstrom/glorys2']
-    glorys_file_structure = 'GLORYS_REANALYSIS_{year}-*.nc'
-    output_dir = os.path.join('/home/jrcermakiii/workdir/configs/Arctic12/OBC/obc_gen', args.procDir)
-    ncrcat_outdir = os.path.join('/home/jrcermakiii/workdir/configs/Arctic12/OBC/obc_gen', args.procDir)
     #hgrid = xr.open_dataset('/Users/james/Documents/nwa25/ocean_hgrid.nc')
-    hgrid = xr.open_dataset('/import/AKWATERS/jrcermakiii/configs/Arctic12/INPUT2/ocean_hgrid.nc')
+
+    #glorys_dirs = ['/import/AKWATERS/kshedstrom/glorys', '/import/AKWATERS/kshedstrom/glorys2']
+    #glorys_file_structure = 'GLORYS_REANALYSIS_{year}-*.nc'
+    #output_dir = os.path.join('/home/jrcermakiii/workdir/configs/Arctic12/OBC/obc_gen', args.procDir)
+    #ncrcat_outdir = os.path.join('/home/jrcermakiii/workdir/configs/Arctic12/OBC/obc_gen', args.procDir)
+    #hgrid = xr.open_dataset('/import/AKWATERS/jrcermakiii/configs/Arctic12/INPUT2/ocean_hgrid.nc')
+
+    glorys_dirs = ['/home/cermak/data/glorys', '/home/cermak/data/glorys2']
+    glorys_file_structure = 'GLORYS_REANALYSIS_{year}-*.nc'
+    output_dir = os.path.join('/home/cermak/workdir/configs/Arctic12/OBC/obc_gen', args.procDir)
+    ncrcat_outdir = os.path.join('/home/cermak/workdir/configs/Arctic12/OBC/obc_gen', args.procDir)
+    hgrid = xr.open_dataset('/home/cermak/workdir/configs/Arctic12/INPUT2/ocean_hgrid.nc')
+
     #segments = [
     #    Segment(1, 'south', hgrid, output_dir=output_dir),
     #    Segment(2, 'north', hgrid, output_dir=output_dir),

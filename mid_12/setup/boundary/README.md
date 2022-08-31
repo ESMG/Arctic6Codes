@@ -1,5 +1,37 @@
 # OBC
 
+Requires:
+ * gridtools
+   * `conda env create -f=conda/gridTools_export-linux-64.yml`
+ * https://github.com/raphaeldussin/HCtFlood
+   * Increase limit from 1000 to 2000 iterations in `flood_kara_raw` (HCtFlood/kara.py)
+   * pip install -e .
+ * bottleneck
+   * conda install bottleneck
+
+NOTE: Unfortunately, paths are hardcoded at the moment!
+
+# GLORYS
+
+Kate downloaded two halves of the earth in a glorys and glorys2 directory.  That is what we
+are using for the OBCs.  The information is subset upfront before OBC processing is done.
+
+# Running on a single node
+
+## First day
+
+```
+python generate_obc_glorys2.py --flooding=True --date=1993-01-01 --firstRec=True --doYear=1993 --procDir=/home/cermak/workdir/configs/Arctic12/OBC/obc_gen/1993 --procDays 1
+```
+
+## Subsequent days
+
+```
+python generate_obc_glorys2.py --flooding=True --date=1993-01-01 --doYear=1993 --procDir=/home/cermak/workdir/configs/Arctic12/OBC/obc_gen/1993 --startDate=1993-01-02 --procDays 1
+```
+
+# Running on a cluster
+
 This script creates slurm jobs to be run on Chinook:
 
 ```

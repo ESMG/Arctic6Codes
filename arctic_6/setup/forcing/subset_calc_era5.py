@@ -397,9 +397,12 @@ def main():
 
     # directories
     #era5dir = "/import/AKWATERS/kshedstrom/ERA5"
-    era5dir = "/import/AKWATERS/jrcermakiii/data/ERA5"
-    subdir = "/import/AKWATERS/jrcermakiii/data/ERA5_periodic_subset"
-    modeldir = "/import/AKWATERS/jrcermakiii/configs/Arctic12/INPUT2"
+    #era5dir = "/import/AKWATERS/jrcermakiii/data/ERA5"
+    #subdir = "/import/AKWATERS/jrcermakiii/data/ERA5_periodic_subset"
+    #modeldir = "/import/AKWATERS/jrcermakiii/configs/Arctic12/INPUT2"
+    era5dir = "/home/cermak/data/ERA5"
+    subdir = "/home/cermak/data/ERA5_periodic_subset"
+    modeldir = "/home/cermak/workdir/configs/Arctic12/INPUT2"
 
     # files
     dataset_landmask_source_file = os.path.join(era5dir, "ERA5_sea_surface_temperature_1993.nc")

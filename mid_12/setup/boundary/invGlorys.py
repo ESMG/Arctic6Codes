@@ -15,7 +15,8 @@ years_present = []
 sdir = []
 
 # Directory 1
-sdir.append('/import/AKWATERS/kshedstrom/glorys')
+#sdir.append('/import/AKWATERS/kshedstrom/glorys')
+sdir.append('/home/cermak/data/glorys')
 in_files = glob.glob(os.path.join(sdir[0], "*.nc"))
 in_files.sort()
 for inf in in_files:
@@ -25,7 +26,8 @@ for inf in in_files:
         years_present.append(fyr)
 
 # Directory 2
-sdir.append('/import/AKWATERS/kshedstrom/glorys2')
+#sdir.append('/import/AKWATERS/kshedstrom/glorys2')
+sdir.append('/home/cermak/data/glorys2')
 in_files = glob.glob(os.path.join(sdir[1], "*.nc"))
 in_files.sort()
 for inf in in_files:
